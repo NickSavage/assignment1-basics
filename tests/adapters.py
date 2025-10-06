@@ -9,6 +9,10 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+import cs336.train_bpe
+
+import regex
+
 
 def run_linear(
     d_in: int,
@@ -452,7 +456,9 @@ def run_cross_entropy(
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
@@ -589,4 +595,4 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    return cs336.train_bpe.run_train_bpe(input_path, vocab_size, special_tokens)
