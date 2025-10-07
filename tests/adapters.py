@@ -10,6 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 import cs336.train_bpe
+import cs336.tokenizer
 
 import regex
 
@@ -565,6 +566,7 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
+    return cs336.tokenizer.get_tokenizer(vocab, merges, special_tokens)
     raise NotImplementedError
 
 
