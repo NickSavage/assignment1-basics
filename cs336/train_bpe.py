@@ -6,6 +6,11 @@ from typing import BinaryIO
 import pickle
 
 
+PAT = re.compile(
+    r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+)
+
+
 def find_chunk_boundaries(
     file: BinaryIO,
     desired_num_chunks: int,
@@ -55,6 +60,24 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
+def pretokenize(chunk_str, special_tokens):
+    freqs = {}
+
+    special_pattern = (
+        re.compile("|".join(re.escape(tok) for tok in special_tokens))
+        if special_tokens
+        else None
+    )
+    sub_chunks = special_pattern.split(chunk_str) if special_pattern else [chunk_str]
+
+    for sub_chunk in sub_chunks:
+        for match in PAT.finditer(sub_chunk):
+            match_bytes = tuple(bytes([b]) for b in match.group().encode("UTF-8"))
+            freqs[match_bytes] = freqs.get(match_bytes, 0) + 1
+
+    return freqs
+
+
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -82,9 +105,9 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-    split_text = []
+    pretoken = {}
+    all_freqs = []
     with open(input_path, "rb") as f:
         num_processes = 4
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
@@ -94,22 +117,16 @@ def run_train_bpe(
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            chunk = chunk.replace("<|endoftext|>", "")
-            split = re.findall(PAT, chunk)
-
-            split_text.extend(split)
+            freqs = pretokenize(chunk, special_tokens)
+            for k, v in freqs.items():
+                pretoken[k] = pretoken.get(k, 0) + v
+                all_freqs.append(freqs)
+    #    import pdb; pdb.set_trace()
     vocab = {i: bytes([i]) for i in range(256)}
     next = max(vocab.keys()) + 1
     for special_token in special_tokens:
         vocab[next] = special_token.encode("utf-8")
         next += 1
-
-    pretoken = {}
-    for word in split_text:
-        b = word.encode("utf-8")
-        tup = tuple(bytes([bt]) for bt in b)  # sequence of 1-byte bytes objects
-        pretoken[tup] = pretoken.get(tup, 0) + 1
-
     post_pretoken = time.time()
     #    print(f"pretokenization took {post_pretoken - start:.4f} seconds")
 
@@ -132,27 +149,20 @@ def run_train_bpe(
     return vocab, merged_list
 
 
-def _check_results(winner, merged_list):
-    # Load the snapshot
-    snapshot_path = "./tests/_snapshots/test_train_bpe_special_tokens.pkl"
-    with open(snapshot_path, "rb") as f:
-        expected_data = pickle.load(f)
-        i = len(merged_list) - 1
-        expected = expected_data["merges"][i]
-        if expected != winner:
-            print(f"index {i}: expected {expected}, actual {winner}")
-            assert expected == winner, ""
-
-
-def merge_tokens(big: tuple[int], sub: tuple[int]) -> tuple[int]:
-    n, m = len(big), len(sub)
-
-    for i in range(n - m + 1):  # sliding window
-        if big[i : i + m] == sub:
-            new = sub[0] + sub[1]
-            # found the subsequence → rebuild with nesting
-            return big[:i] + (new,) + big[i + m :]
-    return big  # unchanged if not found
+def merge_tokens(big: tuple[bytes, ...], sub: tuple[bytes, bytes]) -> tuple[bytes, ...]:
+    # Merge all non-overlapping occurrences of `sub` inside `big`, left-to-right.
+    out = []
+    i = 0
+    n = len(big)
+    while i < n:
+        # since sub is a pair, this check is cheap; if you later generalize, guard for len(sub) > 2
+        if i + 1 < n and big[i] == sub[0] and big[i + 1] == sub[1]:
+            out.append(sub[0] + sub[1])  # concatenate bytes -> merged token
+            i += 2
+        else:
+            out.append(big[i])
+            i += 1
+    return tuple(out)
 
 
 def iterate(vocab, pretoken, merged_list):
@@ -186,17 +196,6 @@ def iterate(vocab, pretoken, merged_list):
     merged_list.append(winner)
     second = time.time()
 
-    # try:
-    #     _check_results(winner, merged_list)
-    # except AssertionError:
-
-    #     snapshot_path = "./tests/_snapshots/test_train_bpe_special_tokens.pkl"
-    #     with open(snapshot_path, "rb") as f:
-    #         expected_data = pickle.load(f)
-    #         import pdb
-
-    #         pdb.set_trace()
-    #         assert False
     results = {}
     for key, value in pretoken.items():
         new_key = merge_tokens(key, winner)
